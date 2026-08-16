@@ -16,6 +16,20 @@ st.set_page_config(
 db.init_db()
 db.seed_if_empty()
 
+
+def refresh_data() -> None:
+    """Reload the plans DataFrame and summary metrics from SQLite into session_state."""
+    st.session_state.plans_df = db.fetch_all_plans()
+    st.session_state.metrics = db.get_summary_metrics()
+
+
+if "plans_df" not in st.session_state:
+    refresh_data()
+if "form_nonce" not in st.session_state:
+    st.session_state.form_nonce = 0
+if "flash" not in st.session_state:
+    st.session_state.flash = None
+
 st.markdown(
     """
     <style>
@@ -39,7 +53,12 @@ st.markdown(
 st.title("📦 Product Planning & Forecasting")
 st.caption("Plan, track, and forecast product volumes across categories.")
 
-metrics = db.get_summary_metrics()
+if st.session_state.flash:
+    level, message = st.session_state.flash
+    getattr(st, level)(message)
+    st.session_state.flash = None
+
+metrics = st.session_state.metrics
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Planned Volume", f"{metrics['total_volume']:,}")
 m2.metric("Total Plans", metrics["row_count"])
@@ -49,22 +68,29 @@ m4.metric("Categories Covered", metrics["category_count"])
 st.divider()
 
 st.subheader("Add a New Product Plan")
-with st.form("new_plan_form", clear_on_submit=True):
+nonce = st.session_state.form_nonce
+with st.form("new_plan_form", clear_on_submit=False):
     left, right = st.columns(2)
     with left:
-        product_name = st.text_input("Product Name")
-        category = st.selectbox("Category", db.CATEGORIES)
+        product_name = st.text_input("Product Name", key=f"product_name_{nonce}")
+        category = st.selectbox("Category", db.CATEGORIES, key=f"category_{nonce}")
         planned_volume = st.number_input(
-            "Planned Volume", min_value=0, step=100, value=1000
+            "Planned Volume",
+            min_value=0,
+            step=100,
+            value=1000,
+            key=f"planned_volume_{nonce}",
         )
     with right:
         forecast_date = st.date_input(
-            "Forecast Date", value=date.today() + timedelta(days=30)
+            "Forecast Date",
+            value=date.today() + timedelta(days=30),
+            key=f"forecast_date_{nonce}",
         )
-        status = st.selectbox("Status", db.STATUSES)
-        notes = st.text_area("Notes", height=100)
+        status = st.selectbox("Status", db.STATUSES, key=f"status_{nonce}")
+        notes = st.text_area("Notes", height=100, key=f"notes_{nonce}")
 
-    submitted = st.form_submit_button("Add Plan", type="primary")
+    submitted = st.form_submit_button("Save to Database", type="primary")
     if submitted:
         if not product_name.strip():
             st.error("Product Name is required.")
@@ -77,24 +103,26 @@ with st.form("new_plan_form", clear_on_submit=True):
                 status=status,
                 notes=notes.strip(),
             )
-            st.success(f"Added '{product_name}' to the plan.")
+            st.session_state.flash = ("success", f"Added '{product_name}' to the plan.")
+            st.session_state.form_nonce += 1
+            refresh_data()
             st.rerun()
 
 st.divider()
 
 st.subheader("Current Plans")
 
-df = db.fetch_all_plans()
+df = st.session_state.plans_df
 
 if not df.empty:
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
         selected_categories = st.multiselect(
-            "Filter by Category", options=db.CATEGORIES, default=[]
+            "Filter by Category", options=db.CATEGORIES, default=[], key="filter_categories"
         )
     with filter_col2:
         selected_statuses = st.multiselect(
-            "Filter by Status", options=db.STATUSES, default=[]
+            "Filter by Status", options=db.STATUSES, default=[], key="filter_statuses"
         )
 
     filtered_df = df.copy()
@@ -125,10 +153,13 @@ if not df.empty:
         plan_options = {
             f"#{row.id} — {row.product_name}": row.id for row in df.itertuples()
         }
-        selected_label = st.selectbox("Select a plan", options=list(plan_options.keys()))
+        selected_label = st.selectbox(
+            "Select a plan", options=list(plan_options.keys()), key="delete_select"
+        )
         if st.button("Delete selected plan"):
             db.delete_plan(plan_options[selected_label])
-            st.success("Plan deleted.")
+            st.session_state.flash = ("success", "Plan deleted.")
+            refresh_data()
             st.rerun()
 else:
     st.info("No product plans yet. Add one above to get started.")
